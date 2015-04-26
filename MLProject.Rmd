@@ -1,0 +1,207 @@
+---
+title: Practical Machine Learning Course Project
+author: by emark
+date: "`r format(Sys.Date(), '%d/%m/%Y')`"
+output: 
+  html_document:
+    keep_md: true
+---
+
+## Project Overview
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways.  
+
+### Goal   
+Predict the manner in which people did the exercise.  
+  
+## Data Source
+[Training data](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv)  
+[Testing data](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv)
+
+## Data Preparation
+
+Loadind packages
+```{r results='hide'}
+library(reshape2)
+library(caret)
+library(rpart)
+library(randomForest)
+library(rattle)
+```
+
+Loading the data.
+```{r}
+urlTrain <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+urlTest <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+dirData <- "Data/"
+fileTrain <- paste0(dirData, "train.csv")
+fileTest <- paste0(dirData, "test.csv")
+if (!file.exists(dirData)) {
+    dir.create(dirData)
+}    
+if (!file.exists(fileTrain)) {
+    download.file(urlTrain, fileTrain, method="curl")
+}
+if (!file.exists(fileTest)) {
+    download.file(urlTest, fileTest, method="curl")
+}
+dfTrainSource <- read.csv(fileTrain, na.strings=c("", "NA", "#DIV/0!"))
+dfTestSource <- read.csv(fileTest, na.strings=c("", "NA", "#DIV/0!"))
+dim(dfTrainSource); dim(dfTestSource)
+```
+
+### Splitting data for cross validation 
+60% for training and 40% for testing
+```{r}
+set.seed(1245)
+inTrain <- createDataPartition(dfTrainSource$classe, p=0.6, list=FALSE)
+dfTrain <- dfTrainSource[inTrain, ]
+dfTest <- dfTrainSource[-inTrain, ]
+dim(dfTrain); dim(dfTest)
+```
+
+### Exploring training dataset and selecting predictors
+1. Removing counter variable
+```{r}
+dfTrain <-  subset(dfTrain, select=-X)
+```
+
+2. % of NA values in each variable.  
+Calculating.  
+```{r}
+sumNACols <- sapply(dfTrain, function(x){sum(is.na(x))})
+percNACols <- round((sumNACols/nrow(dfTrain))*100, 2)
+percNAColsSelected <- percNACols[percNACols>0]
+summary(percNAColsSelected)
+```
+See complete list of variables with % of NA values > 0% in Appendix 1.  
+  
+Removing variable with % of NA >= 90.
+```{r}
+colsNNA <- percNACols < 90
+dfTrain <-  subset(dfTrain, select=colsNNA)
+```
+  
+3. Correlation of *classe* variable with other variables.  
+Calculating correlation.
+```{r}
+# Transforming classe to integer
+iclasse <- 
+    ifelse(dfTrain$classe=="A", 1, 
+    ifelse(dfTrain$classe=="B", 2,  
+    ifelse(dfTrain$classe=="C", 3, 
+    ifelse(dfTrain$classe=="D", 4,
+    ifelse(dfTrain$classe=="E", 5, NA
+    )))))
+# Making dataset with numeric data only
+classCols <- sapply(dfTrain, class)
+colsNumeric <-  classCols=="numeric"|classCols=="integer"
+dfTrainNum <- subset(dfTrain, select=colsNumeric)
+# Calculating correlation
+corClasse <- cor(iclasse, dfTrainNum)
+names(corClasse) <- names(dfTrainNum)
+corClasse <- corClasse[1, ]
+corClasseSoted <- sort(abs(corClasse))
+summary(corClasseSoted)
+```
+See complete list of correlation in Appendix 2.  
+  
+Removing columns with low and NA correlation (keeping all non-numeric columns and numeric columns with correlation > mean). 
+```{r}
+colsRemove <- c(
+    names(corClasseSoted[corClasseSoted<=mean(corClasseSoted)]), # columns with correlation <= mean
+    names(corClasse[is.na(corClasse)]) # columns with NA correlation
+)
+dfTrainPrepared <- dfTrain[, !names(dfTrain) %in% colsRemove]
+```
+
+### Preparing Testing dataset
+```{r}
+# Making the list of predictors
+colPredictors <- names(dfTrainPrepared)
+# Removing classe variable from predictors
+colPredictors <- colPredictors[colPredictors!="classe"]
+# Selecting predictor variables from source testing dataset
+dfTestPrepared <- dfTest[, colPredictors]
+```
+  
+  
+## Prediction
+### Choosing a model
+To choose a model we will fit models using Tree and Random Forest algorithms based on prepared training dataset. Then we will make cross validation for each model - predict *classe* based on testing dataset and compare results with actual *classe* values.  
+  
+1. Tree
+```{r}
+# Fitting a model
+modTree <- rpart(classe ~ ., data=dfTrainPrepared, method="class") # classe is a factor, so method = "class"
+# Predicting 
+predTree <- predict(modTree, newdata=dfTestPrepared, type="class")
+# Comparing predicted and actual values
+cmTree <- confusionMatrix(predTree, dfTest$classe)
+cmTree$overall[1]
+cmTree$table
+```
+See Tree model plot in Appendix 3. 
+
+2. Random Forest
+```{r}
+# Fitting a model
+set.seed(825)
+modRF <- randomForest(classe ~ ., data=dfTrainPrepared) 
+# Predicting 
+predRF <- predict(modRF, newdata=dfTestPrepared, type="class")
+# Comparing predicted and actual values
+cmRF <- confusionMatrix(predRF, dfTest$classe)
+cmRF$overall[1]
+cmRF$table
+```
+  
+Accurancy of the Random Forest model (`r round(cmRF$overall[1], 5)`) is higher than of the Tree model (`r round(cmTree$overall[1], 5)`), so we will use Random Forest model for prediction.
+
+## Predicting
+Preparing source Testing data.
+```{r}
+# selecting predictors
+dfTestSourcePrepared <- dfTestSource[, colPredictors]
+# Checking data type
+dfTestSourcePrepared$magnet_dumbbell_z <- as.numeric(dfTestSourcePrepared$magnet_dumbbell_z)
+dfTestSourcePrepared$magnet_forearm_y <- as.numeric(dfTestSourcePrepared$magnet_forearm_y)
+# Setting factor levels
+levels(dfTestSourcePrepared$user_name) <- levels(dfTrainPrepared$user_name)
+levels(dfTestSourcePrepared$cvtd_timestamp) <- levels(dfTrainPrepared$cvtd_timestamp)
+levels(dfTestSourcePrepared$new_window) <- levels(dfTrainPrepared$new_window)
+```
+Predicting on the source Testing data. 
+```{r}
+predFinal <- predict(modRF, newdata=dfTestSourcePrepared, type="class")
+```
+Save predicted Values. 
+```{r results='hide'}
+dirRes <- "Results/"
+if (!file.exists(dirRes)) {
+    dir.create(dirRes)
+} 
+sapply(1:length(predFinal), 
+    function(i){
+        write.table(predFinal[i], paste0(dirRes, "problem_id_", i, ".txt"), quote = FALSE, row.names = FALSE, col.names = FALSE)
+    }
+)
+```
+     
+## Appendices
+### Appendix 1
+List of variables in Training dataset with % of NA values > 0%.
+```{r}
+melt(sort(percNAColsSelected))
+```
+  
+### Appendix 2
+Correlation of *classe* variable with other variables.
+```{r}
+melt(corClasseSoted)
+```
+
+### Appendix 3
+Tree model plot.
+```{r}
+fancyRpartPlot(modTree)
+```
